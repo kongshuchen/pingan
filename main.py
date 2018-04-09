@@ -1,45 +1,16 @@
-# -*- coding:utf8 -*-
-import os
-import csv
-import pandas as pd
-import time
-import data_process
-from sklearn.model_selection import train_test_split
-from gbm_model import lgb_modelfit_nocv
 import numpy as np
+import pandas as pd
+import xgboost as xgb
 
-np.random.seed(2018)
-
+from feature import get_time, transform_df, month_st, weekday_st, callstate_st, \
+    id_size, longitude_st, latitude_st, height_st
 
 path_train = "/data/dm/train.csv"  # 训练文件
+path_train = './data/dm/train.csv'
 path_test = "/data/dm/test.csv"  # 测试文件
 
 path_test_out = "model/"  # 预测结果输出路径为model/xx.csv,有且只能有一个文件并且是CSV格式。
 
-# path_train = '/home/ksc/PycharmProjects/pingan/data/train.csv'
-CURRENT_PATH = os.getcwd()
-
-
-train_dtypes = {'TERMINALNO': 'int32',
-                'TIME': 'int32',
-                'TRIP_ID': 'int16',
-                'LONGITUDE': 'float32',
-                'LATITUDE': 'float32',
-                'DIRECTION': 'int16',
-                'HEIGHT': 'float32',
-                'SPEED': 'float32',
-                'CALLSTATE': 'int8',
-                'Y': 'float32'}
-
-test_dtypes = {'TERMINALNO': 'int32',
-                'TIME': 'int32',
-                'TRIP_ID': 'int16',
-                'LONGITUDE': 'float32',
-                'LATITUDE': 'float32',
-                'DIRECTION': 'int16',
-                'HEIGHT': 'float32',
-                'SPEED': 'float32',
-                'CALLSTATE': 'int8'}
 
 def read_csv():
     """
@@ -47,69 +18,61 @@ def read_csv():
     :return:
     """
     # for filename in os.listdir(path_train):
+    tempdata = pd.read_csv(path_train)
+    tempdata.columns = ["TERMINALNO", "TIME", "TRIP_ID", "LONGITUDE", "LATITUDE", "DIRECTION", "HEIGHT", "SPEED",
+                        "CALLSTATE", "Y"]
+    return tempdata
+
+
+def get_feature(df):
+    df = transform_df(df)
+    group_list = df.groupby('TERMINALNO')
+    data_list = list()
+
+    for key, group in group_list:
+        size = id_size(group)
+        long_st = longitude_st(group)
+        lati_st = latitude_st(group)
+        hei_st = height_st(group)
+        month = month_st(group)
+        weekday = weekday_st(group)
+        callstate = callstate_st(group)
+        data_list.append(pd.concat([long_st, lati_st, hei_st, size,
+                                    month, weekday, callstate], axis=1))
+
+    res = pd.concat(data_list).reset_index(drop=True)
+    res = res.fillna(0)
+    return res
+
+
+def get_label(df):
+    return df.groupby('TERMINALNO')['Y'].agg(np.mean).reset_index(drop=True)
 
 
 def process():
-    """
-    处理过程，在示例中，使用随机方法生成结果，并将结果文件存储到预测结果路径下。
-    :return:
-    """
-    print('>>>[1].Preprocessing train data and test data...')
-    start_time = time.time()
-    train_data_path = os.path.join(CURRENT_PATH, 'data/train')
-    test_data_path = os.path.join(CURRENT_PATH, 'data/test')
-    train_df, params = data_process.extract_feature(path_train, train_dtypes, save_path=train_data_path,  target='Y')
-    test_df = data_process.extract_feature(path_test, test_dtypes, save_path=test_data_path, data_process_params=params)
-    print('time1:', time.time() - start_time)
+    data = read_csv()
+    data = get_time(data)
+    train_feature = get_feature(data)
+    train_label = get_label(data)
 
-    print('>>>[2]. Train Valid Data Split...')
-    start_time = time.time()
-    train_data, valid_data = train_test_split(train_df, test_size=0.2)
-    print('time2:', time.time() - start_time)
+    params = {'eta': 0.025, 'max_depth': 4,
+              'subsample': 0.9, 'colsample_bytree': 0.7,
+              'colsample_bylevel': 0.7,
+              'min_child_weight': 100,
+              'alpha': 4,
+              'objective': 'reg:linear', 'eval_metric': 'auc', 'seed': 99, 'silent': False}
+    model = xgb.train(params, xgb.DMatrix(train_feature, train_label), 1000)
 
-    print('>>>[3]. Training Process...')
-    start_time = time.time()
-    predictors = ['TERMINALNO', 'TRIP_ID', 'LONGITUDE', 'LATITUDE', 'DIRECTION',\
-                  'HEIGHT', 'SPEED', 'CALLSTATE', 'hour', 'wday', 'month', 'year']
-    target = 'Y'
-    cat_feature = ['TERMINALNO', 'TRIP_ID', 'CALLSTATE',
-                   'hour', 'wday', 'month', 'year']
-    params = {
-        'boosting_type': 'gbdt',
-        'objective': 'regression',
-        'metric': 'mse',
-        'learning_rate': 0.1,
-        'num_leaves': 3,  # 1400  # we should let it be smaller than 2^(max_depth)
-        'max_depth': 2,  # -1 means no limit
-        'min_child_samples': 5,  # Minimum number of data need in a child(min_data_in_leaf)
-        'subsample': .8,  # Subsample ratio of the training instance.
-        'subsample_freq': 1,  # frequence of subsample, <=0 means no enable
-        'colsample_bytree': 0.7,  # Subsample ratio of columns when constructing each tree.
-        'min_child_weight': 0,  # Minimum sum of instance weight(hessian) needed in a child(leaf)
-        'min_split_gain': 0,
-        'reg_alpha': 0,
-        'reg_lambda': 0,
-        'verbose': 1
-    }
+    test_data = pd.read_csv(path_test)
+    test_data.columns = ["TERMINALNO", "TIME", "TRIP_ID", "LONGITUDE", "LATITUDE", "DIRECTION", "HEIGHT", "SPEED",
+                         "CALLSTATE"]
+    test_data = get_time(test_data)
+    test_feature = get_feature(test_data)
 
-    model = lgb_modelfit_nocv(params, train_data, valid_data, predictors, target)
-    print('time3:', time.time() - start_time)
-
-
-    print('>>>[4]. Test Data predict...')
-    start_time = time.time()
-    result = model.predict(test_df[predictors])
-    def f(x):
-        return x if x>=0 else 0
-    result = [f(i) for i in result]
-    pred_csv = pd.DataFrame(columns=['Id', 'Pred'])
-    pred_csv['Id'] = test_df['TERMINALNO']
-    pred_csv['Pred'] = result
-    pred_csv.to_csv(path_test_out + 'pred.csv', index=False)
-    print('time4:', time.time() - start_time)
-
-
-
+    res = pd.DataFrame(model.predict(xgb.DMatrix(test_feature), ntree_limit=model.best_ntree_limit))
+    res.index.name='Id'
+    res.columns=['Pred']
+    res.to_csv('model/pred.csv')
 
 if __name__ == "__main__":
     print("****************** start **********************")
