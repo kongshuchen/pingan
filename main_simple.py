@@ -1,15 +1,7 @@
-import os
-import csv
 import pandas as pd
 import numpy as np
-import datetime
 import time
-from sklearn.ensemble import GradientBoostingRegressor,GradientBoostingClassifier
-from sklearn.metrics import recall_score,precision_score,r2_score,accuracy_score,classification_report,log_loss
-from sklearn.model_selection import train_test_split
-import lightgbm as lgb
-from lightgbm.sklearn import LGBMRegressor
-from lightgbm.sklearn import LGBMClassifier
+import xgboost as xgb
 
 path_train = "/data/dm/train.csv"  # 训练文件
 path_train = './data/dm/train.csv'
@@ -28,9 +20,12 @@ def read_csv():
     tempdata.columns = ["TERMINALNO", "TIME", "TRIP_ID", "LONGITUDE", "LATITUDE", "DIRECTION", "HEIGHT", "SPEED",
                         "CALLSTATE", "Y"]
     return tempdata
+
+
 def time_change(num):
     num=int(float(num))
     return time.strftime("%Y-%m-%d %H:%M:%S",time.localtime(num))
+
 
 def get_time(data):
     data['TIME']=pd.to_datetime(data['TIME'].apply(time_change))
@@ -97,6 +92,7 @@ def get_feature(data,dir_bins,speed_bins):
     print(df.shape)
     return df
 
+
 def get_feature_test(data,dir_bins,speed_bins):
     feature = []
     person = data['TERMINALNO'].unique().tolist()
@@ -154,8 +150,8 @@ def get_feature_test(data,dir_bins,speed_bins):
     df.index=person
     return df
 
-def process():
 
+def process():
     data=read_csv()
     print('train\n',data.head())
     data=get_time(data)
@@ -163,17 +159,28 @@ def process():
     dir_bins = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330, 360]
     speed_bins = [0, 30, 60, 90, 120, 150]
     df=get_feature(data, dir_bins, speed_bins)
-    y = (df[78] > 0).astype(int)
-    X = df.drop(78, axis=1)
-    clf = LGBMClassifier().fit(X,y)
-    testdata = pd.read_csv(path_test)
-    testdata.columns = ["TERMINALNO", "TIME", "TRIP_ID", "LONGITUDE", "LATITUDE", "DIRECTION", "HEIGHT", "SPEED",
+    train_label = (df[78] > 0).astype(int)
+    train_feature = df.drop(78, axis=1)
+
+    params = {'eta': 0.025, 'max_depth': 4,
+              'subsample': 0.9, 'colsample_bytree': 0.7,
+              'colsample_bylevel': 0.7,
+              'min_child_weight': 100,
+              'alpha': 4,
+              'objective': 'reg:linear', 'eval_metric': 'auc', 'seed': 99, 'silent': False}
+    model = xgb.train(params, xgb.DMatrix(train_feature, train_label), 1000)
+
+    test_data = pd.read_csv(path_test)
+    test_data.columns = ["TERMINALNO", "TIME", "TRIP_ID", "LONGITUDE", "LATITUDE", "DIRECTION", "HEIGHT", "SPEED",
                         "CALLSTATE"]
-    print('test\n',testdata.head())
-    data_test=testdata
-    data_test = get_time(data_test)
-    df_test=get_feature_test(data_test,dir_bins,speed_bins)
-    res=pd.DataFrame(clf.predict_proba(df_test)).iloc[:,1:2]
+    data_test = get_time(test_data)
+    test_feature=get_feature_test(data_test,dir_bins,speed_bins)
+
+    res = pd.DataFrame(model.predict(xgb.DMatrix(test_feature), ntree_limit=model.best_ntree_limit))
+    res.index.name='Id'
+    res.columns=['Pred']
+    res.to_csv('model/pred.csv')
+
     res.index.name='Id'
     res.columns=['Pred']
     print(res.head())
